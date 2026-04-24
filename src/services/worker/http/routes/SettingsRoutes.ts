@@ -8,6 +8,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from 'fs';
+import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { getPackageRoot } from '../../../../shared/paths.js';
 import { logger } from '../../../../utils/logger.js';
@@ -17,6 +18,29 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { clearPortCache } from '../../../../shared/worker-utils.js';
+
+export const WORKER_RESTART_DELAY_MS = 1000;
+
+export function scheduleWorkerRestart(reason: string, delayMs = WORKER_RESTART_DELAY_MS): void {
+  setTimeout(() => {
+    const workerScript = process.argv[1];
+    if (!workerScript) {
+      logger.error('WORKER', 'Cannot restart worker: missing worker script path', { reason });
+      return;
+    }
+
+    logger.info('WORKER', 'Scheduling worker restart', { reason, workerScript });
+    const child = spawn(process.execPath, [workerScript, 'restart'], {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        CLAUDE_MEM_MANAGED: 'true',
+      },
+    });
+    child.unref();
+  }, delayMs);
+}
 
 export class SettingsRoutes extends BaseRouteHandler {
   constructor(
@@ -202,11 +226,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     const result = await switchBranch(branch);
 
     if (result.success) {
-      // Schedule worker restart after response is sent
-      setTimeout(() => {
-        logger.info('WORKER', 'Restarting worker after branch switch');
-        process.exit(0); // PM2 will restart the worker
-      }, 1000);
+      // Schedule an explicit worker-service restart after the response is sent.
+      scheduleWorkerRestart('branch switch');
     }
 
     res.json(result);
@@ -221,11 +242,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     const result = await pullUpdates();
 
     if (result.success) {
-      // Schedule worker restart after response is sent
-      setTimeout(() => {
-        logger.info('WORKER', 'Restarting worker after branch update');
-        process.exit(0); // PM2 will restart the worker
-      }, 1000);
+      // Schedule an explicit worker-service restart after the response is sent.
+      scheduleWorkerRestart('branch update');
     }
 
     res.json(result);
